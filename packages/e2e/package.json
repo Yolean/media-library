@@ -1,0 +1,20 @@
+{
+  "name": "@yolean/media-library-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test config.test.ts",
+    "e2e": "node e2e.ts"
+  },
+  "dependencies": {
+    "@yolean/media-library-cli": "workspace:*",
+    "@yolean/media-library-worker": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261007.1",
+    "jose": "6.2.12",
+    "typescript": "5.9.3",
+    "wrangler": "4.148.0"
+  }
+}

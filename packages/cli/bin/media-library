@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# A media library from the command line: list, upload and remove files, as yourself.
+#
+#   media-library upload photo.jpg --alt "The board in the site office"   -> prints the URL
+#   media-library ls
+#   media-library            (all commands)
+#
+# Run through the project's wrapper, which sets MEDIA_ADMIN_URL (media.ts). Needs Node.js.
+# Downloads cloudflared, Cloudflare's own CLI, at a pinned version checked against both its
+# published sha256s, into a per-user cache shared by every project; it signs you in through
+# Cloudflare Access the first time (a browser window opens).
+set -euo pipefail
+
+export MEDIA_CWD="${MEDIA_CWD:-$PWD}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# https://github.com/cloudflare/cloudflared/releases/tag/2026.10.0. Two hashes, checked both:
+# the archive's from GitHub's asset digest, the binary's from the release notes (which hash
+# the binary inside the .tgz, not the .tgz).
+CLOUDFLARED_VERSION=2026.10.0
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64)
+    asset=cloudflared-darwin-arm64.tgz
+    tgz_sha=a2f79ff7b9420aa537d74af239f376da170bbabeb529aec416002adac6a72e70
+    bin_sha=72edfd3eea463aef4d5cb89e2e209cecb048cc756c2b01915de2e0ad7cb39830 ;;
+  Darwin-x86_64)
+    asset=cloudflared-darwin-amd64.tgz
+    tgz_sha=903845b81828c8cb3c5d13d816a2de71c06a3da5785469df8eb0e1b736d92f9f
+    bin_sha=0560c9ab7281ac3f746055323623ed23bc0405b6dab9400474020cba33a978da ;;
+  *) asset="" ;;
+esac
+sha256() { shasum -a 256 "$1" | cut -d' ' -f1; }
+
+dir="${XDG_CACHE_HOME:-$HOME/.cache}/yolean-media-library/cloudflared-$CLOUDFLARED_VERSION"
+if [ -n "${CLOUDFLARED:-}" ]; then
+  :
+elif [ -n "$asset" ]; then
+  if [ ! -x "$dir/cloudflared" ]; then
+    echo "Downloading cloudflared $CLOUDFLARED_VERSION ..." >&2
+    mkdir -p "$dir"
+    curl -fsSL -o "$dir/$asset" "https://github.com/cloudflare/cloudflared/releases/download/$CLOUDFLARED_VERSION/$asset"
+    if [ "$(sha256 "$dir/$asset")" != "$tgz_sha" ]; then
+      rm -rf "$dir"; echo "cloudflared download does not match its published sha256; not used." >&2; exit 1
+    fi
+    tar -xzf "$dir/$asset" -C "$dir" cloudflared
+    rm "$dir/$asset"
+    if [ "$(sha256 "$dir/cloudflared")" != "$bin_sha" ]; then
+      rm -rf "$dir"; echo "cloudflared binary does not match its published sha256; not used." >&2; exit 1
+    fi
+  fi
+  export CLOUDFLARED="$dir/cloudflared"
+elif command -v cloudflared >/dev/null; then
+  export CLOUDFLARED=cloudflared
+else
+  echo "No pinned cloudflared for $(uname -s)-$(uname -m): install cloudflared and run this again." >&2
+  exit 1
+fi
+
+exec node "$HERE/media.ts" "$@"

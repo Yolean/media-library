@@ -1,0 +1,32 @@
+// The example deployment, and what e2e.ts runs in wrangler dev. A project copies this shape:
+// two Workers on one EU R2 bucket, the admin one behind Cloudflare Access (README.md).
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "media",
+  "main": "public.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "example-media", "jurisdiction": "eu" }],
+  "vars": { "PUBLIC_BASE_URL": "https://media.example.workers.dev" },
+  "observability": { "enabled": true },
+  "env": {
+    "admin": {
+      "name": "media-admin",
+      "main": "admin.ts",
+      "workers_dev": true,
+      // A preview URL would be a second hostname the Access toggle may not cover.
+      "preview_urls": false,
+      "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "example-media", "jurisdiction": "eu" }],
+      "vars": {
+        "PUBLIC_BASE_URL": "https://media.example.workers.dev",
+        // From the Access application on the admin Worker. Not secrets; unset admits nobody.
+        "ACCESS_ISSUER": "",
+        "ACCESS_AUD": "",
+        // Domains and exact addresses, on top of the Access policy; empty admits nobody.
+        "ACCESS_ALLOW": "@example.com"
+      },
+      "observability": { "enabled": true }
+    }
+  }
+}

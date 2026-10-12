@@ -1,0 +1,11 @@
+{
+  "name": "media-library",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.4.1",
+  "engines": { "node": ">=24.21 <25 || >=26.10" },
+  "scripts": {
+    "checks": "pnpm -r run typecheck && pnpm -r run test",
+    "e2e": "pnpm --filter @yolean/media-library-e2e run e2e"
+  }
+}

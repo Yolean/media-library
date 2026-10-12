@@ -1,0 +1,174 @@
+// A media library from the command line, for people and their agents; run through
+// bin/media-library, which provides cloudflared. Every call is made as the person signed in
+// to Cloudflare Access through cloudflared, never with a shared key.
+//
+// Configured by the project's wrapper script (README.md, "Using it in a project"):
+//   MEDIA_ADMIN_URL      the admin Worker, e.g. https://media-admin.yolean.workers.dev (required)
+//   MEDIA_REFERENCED_BY  files that use media URLs, comma-separated; rm refuses a file they mention
+//   MEDIA_COMMAND        how the person invokes it, for the usage text
+//   MEDIA_CWD            where the person ran it, so file arguments resolve as typed
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import path from 'node:path';
+
+const ADMIN_URL = (process.env.MEDIA_ADMIN_URL ?? '').replace(/\/$/, '');
+const CLOUDFLARED = process.env.CLOUDFLARED ?? 'cloudflared';
+/** Where the person ran the command, so file arguments resolve as they typed them */
+const CWD = process.env.MEDIA_CWD ?? process.cwd();
+const REFERENCED_BY = (process.env.MEDIA_REFERENCED_BY ?? '').split(',').map((f) => f.trim()).filter(Boolean)
+  .map((f) => path.resolve(CWD, f));
+const COMMAND = process.env.MEDIA_COMMAND ?? 'media-library';
+
+const TYPES: Record<string, string> = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', avif: 'image/avif', gif: 'image/gif',
+  mp4: 'video/mp4', webm: 'video/webm', pdf: 'application/pdf',
+};
+
+interface Item { name: string; url: string; contentType: string; size: number; uploadedBy: string; uploadedAt: string; filename: string; alt: string }
+
+const USAGE = `Usage: ${COMMAND} <command>
+
+  ls [--json]                       every file, newest first
+  upload <file> [--alt <text>] [--json]
+                                    add a file; prints its public URL
+  info <name> [--json]              one file's details
+  rm <name> [--force]               remove a file (refused while ${REFERENCED_BY.map((f) => path.basename(f)).join(', ') || 'the project'} uses it, unless --force)
+  whoami                            who you are signed in as
+  login                             sign in again (opens the browser)
+
+Allowed: ${Object.keys(TYPES).join(', ')}. Files are named by their content, so uploading the
+same file twice gives the same URL.`;
+
+function fail(message: string): never {
+  console.error(message);
+  process.exit(1);
+}
+
+function login(): void {
+  console.error(`Signing in to ${ADMIN_URL}; a browser window opens.`);
+  const r = spawnSync(CLOUDFLARED, ['access', 'login', ADMIN_URL], { stdio: ['inherit', 'ignore', 'inherit'] });
+  if (r.status !== 0) fail(`Sign-in did not complete. Run \`${COMMAND} login\` and finish it in the browser.`);
+}
+
+/** The person's Access token: from cloudflared, signing in first if there is none or it expired */
+function token(): { header: string; value: string } {
+  // Tests and local runs against wrangler dev, where no Access edge turns cf-access-token into the assertion
+  if (process.env.MEDIA_ACCESS_TOKEN) return { header: 'cf-access-jwt-assertion', value: process.env.MEDIA_ACCESS_TOKEN };
+  const read = () => {
+    try {
+      return execFileSync(CLOUDFLARED, ['access', 'token', `-app=${ADMIN_URL}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      return '';
+    }
+  };
+  let value = read();
+  if (!value) {
+    login();
+    value = read();
+  }
+  if (!value) fail('No Access token after signing in.');
+  return { header: 'cf-access-token', value };
+}
+
+async function api(method: string, apiPath: string, init: { body?: BodyInit; headers?: Record<string, string> } = {}, retried = false): Promise<Response> {
+  const t = token();
+  const res = await fetch(`${ADMIN_URL}${apiPath}`, { method, body: init.body, headers: { ...init.headers, [t.header]: t.value }, redirect: 'manual', duplex: 'half' } as RequestInit);
+  // Access answers an expired login with a redirect to its login page
+  if (!retried && !process.env.MEDIA_ACCESS_TOKEN && (res.status === 401 || res.status === 302 || res.status === 403)) {
+    login();
+    return api(method, apiPath, init, true);
+  }
+  return res;
+}
+
+async function expectOk(res: Response): Promise<unknown> {
+  if (res.ok) return res.status === 204 ? null : res.json();
+  const text = await res.text();
+  let message = text;
+  try {
+    const body = JSON.parse(text) as { error?: string; message?: string };
+    message = [body.error, body.message].filter(Boolean).join(': ');
+  } catch { /* not JSON */ }
+  fail(`${res.status} ${message}`.trim());
+}
+
+const size = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MiB` : `${Math.ceil(n / 1024)} KiB`);
+const show = (i: Item) => `${i.url}\n  ${i.filename || '-'}, ${size(i.size)}, ${i.contentType}, by ${i.uploadedBy || '?'} at ${i.uploadedAt}${i.alt ? `\n  alt: ${i.alt}` : ''}`;
+
+function option(args: string[], flag: string): string | undefined {
+  const i = args.indexOf(flag);
+  if (i < 0) return undefined;
+  const value = args[i + 1];
+  if (value === undefined) fail(`${flag} needs a value`);
+  args.splice(i, 2);
+  return value;
+}
+
+function flag(args: string[], name: string): boolean {
+  const i = args.indexOf(name);
+  if (i >= 0) args.splice(i, 1);
+  return i >= 0;
+}
+
+async function main(argv: string[]) {
+  const [command, ...args] = argv;
+  const json = flag(args, '--json');
+  switch (command) {
+    case 'ls': {
+      const { items, truncated } = (await expectOk(await api('GET', '/api/v1/media'))) as { items: Item[]; truncated: boolean };
+      if (json) return console.log(JSON.stringify({ items, truncated }, null, 2));
+      for (const i of items) console.log(show(i));
+      console.log(`${items.length} file(s)${truncated ? ', more not listed' : ''}`);
+      return;
+    }
+    case 'upload': {
+      const alt = option(args, '--alt');
+      const [file] = args;
+      if (!file) fail(USAGE);
+      const full = path.resolve(CWD, file);
+      if (!existsSync(full) || !statSync(full).isFile()) fail(`No such file: ${full}`);
+      const ext = path.extname(full).slice(1).toLowerCase();
+      const type = TYPES[ext] ?? fail(`${ext || 'no extension'}: allowed are ${Object.keys(TYPES).join(', ')}`);
+      const body = readFileSync(full);
+      const sha256 = createHash('sha256').update(body).digest('hex');
+      const q = new URLSearchParams({ sha256, filename: path.basename(full), ...(alt ? { alt } : {}) });
+      const res = await api('PUT', `/api/v1/media?${q}`, { body, headers: { 'content-type': type, 'content-length': String(body.length) } });
+      const item = (await expectOk(res)) as Item;
+      if (json) return console.log(JSON.stringify({ ...item, alreadyInLibrary: res.status === 200 }, null, 2));
+      console.log(item.url);
+      console.error(res.status === 200 ? 'Already in the library.' : `Uploaded ${size(item.size)} as ${item.uploadedBy}.`);
+      return;
+    }
+    case 'info': {
+      const [name] = args;
+      if (!name) fail(USAGE);
+      const item = (await expectOk(await api('GET', `/api/v1/media/${encodeURIComponent(name)}`))) as Item;
+      return console.log(json ? JSON.stringify(item, null, 2) : show(item));
+    }
+    case 'rm': {
+      const force = flag(args, '--force');
+      const [name] = args;
+      if (!name) fail(USAGE);
+      const user = REFERENCED_BY.find((f) => existsSync(f) && readFileSync(f, 'utf8').includes(name));
+      if (!force && user) fail(`${path.relative(CWD, user)} still uses ${name}; remove it there first, or pass --force.`);
+      await expectOk(await api('DELETE', `/api/v1/media/${encodeURIComponent(name)}`));
+      return console.error(`Removed ${name}.`);
+    }
+    case 'whoami':
+      return console.log(((await expectOk(await api('GET', '/api/v1/me'))) as { email: string }).email);
+    case 'login':
+      return login();
+    default:
+      console.error(USAGE);
+      process.exit(command ? 2 : 0);
+  }
+}
+
+if (!ADMIN_URL) fail('MEDIA_ADMIN_URL is not set: run this through the project\'s wrapper script.');
+try {
+  await main(process.argv.slice(2));
+} catch (err) {
+  // fetch failing outright: DNS, connection refused, offline
+  fail(`Could not reach ${ADMIN_URL}: ${((err as Error).cause as Error)?.message ?? (err as Error).message}`);
+}
