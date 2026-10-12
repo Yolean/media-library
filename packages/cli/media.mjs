@@ -7,6 +7,9 @@
 //   MEDIA_REFERENCED_BY  files that use media URLs, comma-separated; rm refuses a file they mention
 //   MEDIA_COMMAND        how the person invokes it, for the usage text
 //   MEDIA_CWD            where the person ran it, so file arguments resolve as typed
+//
+// Plain JavaScript, typechecked through JSDoc: Node does not strip TypeScript types in
+// node_modules, which is where projects install this.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
@@ -20,12 +23,13 @@ const REFERENCED_BY = (process.env.MEDIA_REFERENCED_BY ?? '').split(',').map((f)
   .map((f) => path.resolve(CWD, f));
 const COMMAND = process.env.MEDIA_COMMAND ?? 'media-library';
 
-const TYPES: Record<string, string> = {
+/** @type {Record<string, string>} */
+const TYPES = {
   jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', avif: 'image/avif', gif: 'image/gif',
   mp4: 'video/mp4', webm: 'video/webm', pdf: 'application/pdf',
 };
 
-interface Item { name: string; url: string; contentType: string; size: number; uploadedBy: string; uploadedAt: string; filename: string; alt: string }
+/** @typedef {{ name: string, url: string, contentType: string, size: number, uploadedBy: string, uploadedAt: string, filename: string, alt: string }} Item */
 
 const USAGE = `Usage: ${COMMAND} <command>
 
@@ -40,19 +44,21 @@ const USAGE = `Usage: ${COMMAND} <command>
 Allowed: ${Object.keys(TYPES).join(', ')}. Files are named by their content, so uploading the
 same file twice gives the same URL.`;
 
-function fail(message: string): never {
+/** @param {string} message @returns {never} */
+function fail(message) {
   console.error(message);
   process.exit(1);
 }
 
-function login(): void {
+function login() {
   console.error(`Signing in to ${ADMIN_URL}; a browser window opens.`);
   const r = spawnSync(CLOUDFLARED, ['access', 'login', ADMIN_URL], { stdio: ['inherit', 'ignore', 'inherit'] });
   if (r.status !== 0) fail(`Sign-in did not complete. Run \`${COMMAND} login\` and finish it in the browser.`);
 }
 
 /** The person's Access token: from cloudflared, signing in first if there is none or it expired */
-function token(): { header: string; value: string } {
+/** @returns {{ header: string, value: string }} */
+function token() {
   // Tests and local runs against wrangler dev, where no Access edge turns cf-access-token into the assertion
   if (process.env.MEDIA_ACCESS_TOKEN) return { header: 'cf-access-jwt-assertion', value: process.env.MEDIA_ACCESS_TOKEN };
   const read = () => {
@@ -71,9 +77,14 @@ function token(): { header: string; value: string } {
   return { header: 'cf-access-token', value };
 }
 
-async function api(method: string, apiPath: string, init: { body?: BodyInit; headers?: Record<string, string> } = {}, retried = false): Promise<Response> {
+/**
+ * @param {string} method @param {string} apiPath
+ * @param {{ body?: BodyInit, headers?: Record<string, string> }} [init] @param {boolean} [retried]
+ * @returns {Promise<Response>}
+ */
+async function api(method, apiPath, init = {}, retried = false) {
   const t = token();
-  const res = await fetch(`${ADMIN_URL}${apiPath}`, { method, body: init.body, headers: { ...init.headers, [t.header]: t.value }, redirect: 'manual', duplex: 'half' } as RequestInit);
+  const res = await fetch(`${ADMIN_URL}${apiPath}`, /** @type {RequestInit} */ ({ method, body: init.body, headers: { ...init.headers, [t.header]: t.value }, redirect: 'manual', duplex: 'half' }));
   // Access answers an expired login with a redirect to its login page
   if (!retried && !process.env.MEDIA_ACCESS_TOKEN && (res.status === 401 || res.status === 302 || res.status === 403)) {
     login();
@@ -82,21 +93,23 @@ async function api(method: string, apiPath: string, init: { body?: BodyInit; hea
   return res;
 }
 
-async function expectOk(res: Response): Promise<unknown> {
+/** @param {Response} res @returns {Promise<unknown>} */
+async function expectOk(res) {
   if (res.ok) return res.status === 204 ? null : res.json();
   const text = await res.text();
   let message = text;
   try {
-    const body = JSON.parse(text) as { error?: string; message?: string };
+    const body = /** @type {{ error?: string, message?: string }} */ (JSON.parse(text));
     message = [body.error, body.message].filter(Boolean).join(': ');
   } catch { /* not JSON */ }
   fail(`${res.status} ${message}`.trim());
 }
 
-const size = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MiB` : `${Math.ceil(n / 1024)} KiB`);
-const show = (i: Item) => `${i.url}\n  ${i.filename || '-'}, ${size(i.size)}, ${i.contentType}, by ${i.uploadedBy || '?'} at ${i.uploadedAt}${i.alt ? `\n  alt: ${i.alt}` : ''}`;
+const size = (/** @type {number} */ n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MiB` : `${Math.ceil(n / 1024)} KiB`);
+const show = (/** @type {Item} */ i) => `${i.url}\n  ${i.filename || '-'}, ${size(i.size)}, ${i.contentType}, by ${i.uploadedBy || '?'} at ${i.uploadedAt}${i.alt ? `\n  alt: ${i.alt}` : ''}`;
 
-function option(args: string[], flag: string): string | undefined {
+/** @param {string[]} args @param {string} flag @returns {string | undefined} */
+function option(args, flag) {
   const i = args.indexOf(flag);
   if (i < 0) return undefined;
   const value = args[i + 1];
@@ -105,18 +118,20 @@ function option(args: string[], flag: string): string | undefined {
   return value;
 }
 
-function flag(args: string[], name: string): boolean {
+/** @param {string[]} args @param {string} name */
+function flag(args, name) {
   const i = args.indexOf(name);
   if (i >= 0) args.splice(i, 1);
   return i >= 0;
 }
 
-async function main(argv: string[]) {
+/** @param {string[]} argv */
+async function main(argv) {
   const [command, ...args] = argv;
   const json = flag(args, '--json');
   switch (command) {
     case 'ls': {
-      const { items, truncated } = (await expectOk(await api('GET', '/api/v1/media'))) as { items: Item[]; truncated: boolean };
+      const { items, truncated } = /** @type {{ items: Item[], truncated: boolean }} */ (await expectOk(await api('GET', '/api/v1/media')));
       if (json) return console.log(JSON.stringify({ items, truncated }, null, 2));
       for (const i of items) console.log(show(i));
       console.log(`${items.length} file(s)${truncated ? ', more not listed' : ''}`);
@@ -134,7 +149,7 @@ async function main(argv: string[]) {
       const sha256 = createHash('sha256').update(body).digest('hex');
       const q = new URLSearchParams({ sha256, filename: path.basename(full), ...(alt ? { alt } : {}) });
       const res = await api('PUT', `/api/v1/media?${q}`, { body, headers: { 'content-type': type, 'content-length': String(body.length) } });
-      const item = (await expectOk(res)) as Item;
+      const item = /** @type {Item} */ (await expectOk(res));
       if (json) return console.log(JSON.stringify({ ...item, alreadyInLibrary: res.status === 200 }, null, 2));
       console.log(item.url);
       console.error(res.status === 200 ? 'Already in the library.' : `Uploaded ${size(item.size)} as ${item.uploadedBy}.`);
@@ -143,7 +158,7 @@ async function main(argv: string[]) {
     case 'info': {
       const [name] = args;
       if (!name) fail(USAGE);
-      const item = (await expectOk(await api('GET', `/api/v1/media/${encodeURIComponent(name)}`))) as Item;
+      const item = /** @type {Item} */ (await expectOk(await api('GET', `/api/v1/media/${encodeURIComponent(name)}`)));
       return console.log(json ? JSON.stringify(item, null, 2) : show(item));
     }
     case 'rm': {
@@ -156,7 +171,7 @@ async function main(argv: string[]) {
       return console.error(`Removed ${name}.`);
     }
     case 'whoami':
-      return console.log(((await expectOk(await api('GET', '/api/v1/me'))) as { email: string }).email);
+      return console.log(/** @type {{ email: string }} */ (await expectOk(await api('GET', '/api/v1/me'))).email);
     case 'login':
       return login();
     default:
@@ -170,5 +185,6 @@ try {
   await main(process.argv.slice(2));
 } catch (err) {
   // fetch failing outright: DNS, connection refused, offline
-  fail(`Could not reach ${ADMIN_URL}: ${((err as Error).cause as Error)?.message ?? (err as Error).message}`);
+  const e = /** @type {Error} */ (err);
+  fail(`Could not reach ${ADMIN_URL}: ${/** @type {Error | undefined} */ (e.cause)?.message ?? e.message}`);
 }

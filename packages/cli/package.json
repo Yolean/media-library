@@ -1,13 +1,18 @@
 {
   "name": "@yolean/media-library-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "The media library from the command line, as the person signed in to Cloudflare Access (cloudflared, pinned and verified)",
   "license": "Apache-2.0",
   "type": "module",
-  "bin": { "media-library": "bin/media-library" },
-  "files": ["bin", "media.ts"],
+  "bin": {
+    "media-library": "bin/media-library"
+  },
+  "files": [
+    "bin",
+    "media.mjs"
+  ],
   "scripts": {
-    "typecheck": "tsc --noEmit --strict --target ES2022 --module nodenext --moduleResolution nodenext --allowImportingTsExtensions --types node --skipLibCheck media.ts",
+    "typecheck": "tsc --noEmit --strict --allowJs --checkJs --target ES2022 --module nodenext --moduleResolution nodenext --types node --skipLibCheck media.mjs",
     "test": "bash -n bin/media-library"
   },
   "devDependencies": {

@@ -12,7 +12,7 @@ import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -23,11 +23,15 @@ import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 
 const ROOT = path.dirname(url.fileURLToPath(import.meta.url));
 const WRANGLER = path.join(ROOT, 'node_modules', '.bin', 'wrangler');
-const CLI = path.join(ROOT, 'node_modules', '.bin', 'media-library');
 const AUD = 'e2e-media-admin';
 const ADMIN_PORT = 8791;
 const PUBLIC_PORT = 8792;
 const persist = mkdtempSync(path.join(tmpdir(), 'media-e2e-'));
+// The CLI as a project gets it: a copy under node_modules, where Node strips no TypeScript
+// types, rather than the workspace link, which points outside node_modules
+const installed = path.join(persist, 'node_modules', '@yolean', 'media-library-cli');
+cpSync(path.join(ROOT, '..', 'cli'), installed, { recursive: true, filter: (f) => !f.includes('node_modules') });
+const CLI = path.join(installed, 'bin', 'media-library');
 const children: ChildProcess[] = [];
 
 function wrangler(args: string[]): ChildProcess {

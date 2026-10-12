@@ -56,4 +56,4 @@ else
   exit 1
 fi
 
-exec node "$HERE/media.ts" "$@"
+exec node "$HERE/media.mjs" "$@"
