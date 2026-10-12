@@ -40,6 +40,12 @@ export function createPublicApp() {
     defaultHook: (result) => (result.success ? undefined : notFound()),
   });
 
+  // Before the file route, which answers every other path with 404
+  app.doc('/openapi.json', {
+    openapi: '3.0.3',
+    info: { title: 'Media', version: '1', description: 'A media library\'s files, public and read-only (github.com/Yolean/media-library)' },
+  });
+
   app.openapi(fileRoute, async (c) => {
     const { name } = c.req.valid('param');
     const ext = NAME.exec(name)![2];
@@ -83,10 +89,6 @@ export function createPublicApp() {
     return new Response(object.body, { status: 206, headers });
   });
 
-  app.doc('/openapi.json', {
-    openapi: '3.0.3',
-    info: { title: 'Media', version: '1', description: 'A media library\'s files, public and read-only (github.com/Yolean/media-library)' },
-  });
   app.notFound(notFound);
 
   return app;

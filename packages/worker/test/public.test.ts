@@ -45,6 +45,14 @@ describe('public files', () => {
     assert.equal((await get(`/${NAME}`, { 'if-none-match': etag })).status, 304);
   });
 
+  it('serves its OpenAPI document', async () => {
+    const { get } = await setup();
+    const res = await get('/openapi.json');
+    assert.equal(res.status, 200);
+    const doc = (await res.json()) as { paths: Record<string, Record<string, { operationId: string }>> };
+    assert.equal(doc.paths['/{name}'].get.operationId, 'getFile');
+  });
+
   it('serves nothing but well-formed names of allowed types', async () => {
     const { get } = await setup();
     for (const path of ['/', '/0123456789abcdef0124.mp4', '/0123456789abcdef0123.html', '/..%2f..%2fx', '/api/v1/media', '/0123456789ABCDEF0123.mp4']) {

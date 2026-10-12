@@ -67,8 +67,8 @@ media-library login
 
 1. Dependencies, pinned to a tag (no npm registry involved; the repository is public):
    ```bash
-   pnpm add 'github:Yolean/media-library#v0.1.1&path:/packages/worker'
-   pnpm add -D 'github:Yolean/media-library#v0.1.1&path:/packages/cli'
+   pnpm add 'github:Yolean/media-library#v0.1.2&path:/packages/worker'
+   pnpm add -D 'github:Yolean/media-library#v0.1.2&path:/packages/cli'
    ```
 2. Two entry files:
    ```ts
