@@ -52,28 +52,65 @@ export const IMMUTABLE = 'public, max-age=31536000, immutable';
 export const Sha256 = z.string().regex(/^[0-9a-f]{64}$/).describe('Hex sha256 of the file');
 export const MediaName = z.string().regex(NAME).openapi({ example: '3fab80933e4cbe1806e0.mp4' });
 
+/**
+ * The labels: a non-binding convention for people browsing the library and for traceability.
+ * Every one is optional; the file's name stays its content hash whatever they say.
+ */
+export const Category = z.string().max(80)
+  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*$/, 'lowercase words, dashes, and / between levels')
+  .describe('What the file is, instead of a folder: lowercase words, / between levels (kundlogotyper, guider/pdf)')
+  .openapi({ example: 'kundlogotyper' });
+export const AssetId = z.string().max(64)
+  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'lowercase words and dashes')
+  .describe('A stable id across versions: uploading with an asset id makes the file that asset\'s newest version')
+  .openapi({ example: 'ncc-logo' });
+export const Alt = z.string().max(300).describe('Suggested alt text');
+export const Note = z.string().max(300).describe('Where the file came from: source, photographer, rights');
+
 export const MediaItem = z.object({
   name: MediaName,
   url: z.string().url().describe('The public address to use in the site\'s src attributes'),
   contentType: z.enum(Object.keys(TYPES) as [ContentType, ...ContentType[]]),
   size: z.number().int(),
   sha256: Sha256,
+  filename: z.string().describe('The file\'s name on the uploader\'s machine, recorded at upload; empty if unknown'),
+  alt: z.string().describe('Suggested alt text; empty if none'),
+  category: z.string().describe('Empty if none'),
+  asset: z.string().describe('The asset this file is a version of; empty if none'),
+  supersedes: z.string().describe('The asset\'s newest file when this one was uploaded; empty if none'),
+  note: z.string().describe('Source, photographer, rights; empty if none'),
   uploadedBy: z.string().describe('Email of the person who uploaded it, from their Access login'),
   uploadedAt: z.string().datetime(),
-  filename: z.string().describe('The file\'s name on the uploader\'s machine'),
-  alt: z.string().describe('Suggested alt text, empty if none was given'),
+  updatedBy: z.string().describe('Who last changed the labels; empty if never'),
+  updatedAt: z.string().describe('When the labels last changed; empty if never'),
 }).openapi('MediaItem');
 export type MediaItem = z.infer<typeof MediaItem>;
 
-/** What is kept as the object's customMetadata */
-interface Stored {
+/** The labels a person sets; empty means none */
+export interface Labels { alt?: string; category?: string; asset?: string; note?: string }
+export const LABELS = ['alt', 'category', 'asset', 'note'] as const;
+
+/** What the Worker records itself */
+interface Recorded {
   sha256: string;
   uploadedBy: string;
   uploadedAt: string;
-  filename: string;
-  alt: string;
+  filename?: string;
+  supersedes?: string;
+  updatedBy?: string;
+  updatedAt?: string;
 }
-export const storedMetadata = (m: Stored): Record<string, string> => ({ ...m });
+
+/** R2 allows 2,048 bytes of custom metadata per object, keys and values together */
+export const MAX_METADATA_BYTES = 2048;
+
+/** The object's customMetadata: only the fields that have a value */
+export function storedMetadata(m: (Recorded & Labels) | Record<string, string | undefined>): Record<string, string> {
+  return Object.fromEntries(Object.entries(m).filter((e): e is [string, string] => typeof e[1] === 'string' && e[1] !== ''));
+}
+
+export const metadataBytes = (m: Record<string, string>) =>
+  Object.entries(m).reduce((n, [k, v]) => n + new TextEncoder().encode(k + v).length, 0);
 
 export function itemOf(object: R2Object, publicBaseUrl: string): MediaItem {
   const meta = object.customMetadata ?? {};
@@ -84,9 +121,15 @@ export function itemOf(object: R2Object, publicBaseUrl: string): MediaItem {
     contentType: TYPE_BY_EXT[ext],
     size: object.size,
     sha256: meta.sha256 ?? '',
-    uploadedBy: meta.uploadedBy ?? '',
-    uploadedAt: meta.uploadedAt ?? object.uploaded.toISOString(),
     filename: meta.filename ?? '',
     alt: meta.alt ?? '',
+    category: meta.category ?? '',
+    asset: meta.asset ?? '',
+    supersedes: meta.supersedes ?? '',
+    note: meta.note ?? '',
+    uploadedBy: meta.uploadedBy ?? '',
+    uploadedAt: meta.uploadedAt ?? object.uploaded.toISOString(),
+    updatedBy: meta.updatedBy ?? '',
+    updatedAt: meta.updatedAt ?? '',
   };
 }

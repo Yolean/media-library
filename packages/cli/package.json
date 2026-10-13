@@ -1,6 +1,6 @@
 {
   "name": "@yolean/media-library-cli",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "The media library from the command line, as the person signed in to Cloudflare Access (cloudflared, pinned and verified)",
   "license": "Apache-2.0",
   "type": "module",

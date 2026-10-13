@@ -31,6 +31,7 @@ function parseRange(header: string | null, size: number): { offset: number; leng
 
 export function fakeR2() {
   const entries = new Map<string, Entry>();
+  let writes = 0;
   const bucket = {
     async head(key: string) {
       const e = entries.get(key);
@@ -45,11 +46,14 @@ export function fakeR2() {
       // As R2 does: all three keys, the unused one undefined
       return { ...object(key, e, range ? { offset: range.offset, length: range.length, suffix: undefined } : undefined), body: new Blob([bytes]).stream() };
     },
-    async put(key: string, value: ReadableStream | null, opts: { sha256?: string; httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> }) {
+    async put(key: string, value: ReadableStream | null, opts: { sha256?: string; httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string>; onlyIf?: { etagMatches?: string } }) {
       const body = new Uint8Array(await new Response(value).arrayBuffer());
+      // As R2 does: a failed precondition stores nothing and returns null
+      if (opts.onlyIf?.etagMatches && entries.get(key)?.etag !== opts.onlyIf.etagMatches) return null;
       const sha256 = createHash('sha256').update(body).digest('hex');
       if (opts.sha256 && opts.sha256 !== sha256) throw new Error('put: The SHA-256 checksum you specified did not match what we received.');
-      const e = { body, contentType: opts.httpMetadata?.contentType, customMetadata: opts.customMetadata ?? {}, uploaded: new Date(), etag: sha256.slice(0, 32) };
+      // R2's etag changes with every write, metadata included
+      const e = { body, contentType: opts.httpMetadata?.contentType, customMetadata: opts.customMetadata ?? {}, uploaded: new Date(), etag: `${sha256.slice(0, 24)}${String(++writes).padStart(8, '0')}` };
       entries.set(key, e);
       return object(key, e);
     },

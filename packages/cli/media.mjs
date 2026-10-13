@@ -29,20 +29,37 @@ const TYPES = {
   mp4: 'video/mp4', webm: 'video/webm', pdf: 'application/pdf',
 };
 
-/** @typedef {{ name: string, url: string, contentType: string, size: number, uploadedBy: string, uploadedAt: string, filename: string, alt: string }} Item */
+/**
+ * @typedef {{ name: string, url: string, contentType: string, size: number, sha256: string,
+ *   filename: string, alt: string, category: string, asset: string, supersedes: string, note: string,
+ *   uploadedBy: string, uploadedAt: string, updatedBy: string, updatedAt: string }} Item
+ */
+
+/** The labels: optional, for people browsing and for traceability; the name stays the content hash */
+const LABELS = ['alt', 'category', 'asset', 'note'];
 
 const USAGE = `Usage: ${COMMAND} <command>
 
-  ls [--json]                       every file, newest first
-  upload <file> [--alt <text>] [--json]
-                                    add a file; prints its public URL
+  ls [--category <c>] [--asset <id>] [--json]
+                                    files, newest first; a category includes those below it
+  upload <file> [labels] [--no-filename] [--json]
+                                    add a file; prints its public URL. --no-filename when the
+                                    local name means nothing (generated files)
+  label <name> [labels]             change a file's labels; "" removes one
   info <name> [--json]              one file's details
+  ui                                the address of the read-only view in the browser
   rm <name> [--force]               remove a file (refused while ${REFERENCED_BY.map((f) => path.basename(f)).join(', ') || 'the project'} uses it, unless --force)
   whoami                            who you are signed in as
   login                             sign in again (opens the browser)
 
+Labels, all optional:
+  --alt <text>        suggested alt text
+  --category <c>      what it is, instead of a folder: lowercase words, / between levels (kundlogotyper)
+  --asset <id>        a stable id across versions (ncc-logo); uploading with it makes the newest version
+  --note <text>       source, photographer, rights
+
 Allowed: ${Object.keys(TYPES).join(', ')}. Files are named by their content, so uploading the
-same file twice gives the same URL.`;
+same file twice gives the same URL, and a new version of something gets a new URL.`;
 
 /** @param {string} message @returns {never} */
 function fail(message) {
@@ -106,7 +123,24 @@ async function expectOk(res) {
 }
 
 const size = (/** @type {number} */ n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MiB` : `${Math.ceil(n / 1024)} KiB`);
-const show = (/** @type {Item} */ i) => `${i.url}\n  ${i.filename || '-'}, ${size(i.size)}, ${i.contentType}, by ${i.uploadedBy || '?'} at ${i.uploadedAt}${i.alt ? `\n  alt: ${i.alt}` : ''}`;
+const show = (/** @type {Item} */ i) => [
+  i.url,
+  `  ${i.filename || '-'}, ${size(i.size)}, ${i.contentType}, by ${i.uploadedBy || '?'} at ${i.uploadedAt}`,
+  ...[['category', i.category], ['asset', i.asset], ['supersedes', i.supersedes], ['alt', i.alt], ['note', i.note]]
+    .filter(([, v]) => v).map(([k, v]) => `  ${k}: ${v}`),
+  ...(i.updatedAt ? [`  labels changed ${i.updatedAt} by ${i.updatedBy}`] : []),
+].join('\n');
+
+/** The label options given, removed from args; "" kept, since it removes a label */
+function labels(/** @type {string[]} */ args) {
+  /** @type {Record<string, string>} */
+  const out = {};
+  for (const key of LABELS) {
+    const value = option(args, `--${key}`);
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
+}
 
 /** @param {string[]} args @param {string} flag @returns {string | undefined} */
 function option(args, flag) {
@@ -131,14 +165,20 @@ async function main(argv) {
   const json = flag(args, '--json');
   switch (command) {
     case 'ls': {
-      const { items, truncated } = /** @type {{ items: Item[], truncated: boolean }} */ (await expectOk(await api('GET', '/api/v1/media')));
+      const filter = new URLSearchParams();
+      for (const key of ['category', 'asset']) {
+        const value = option(args, `--${key}`);
+        if (value) filter.set(key, value);
+      }
+      const { items, truncated } = /** @type {{ items: Item[], truncated: boolean }} */ (await expectOk(await api('GET', `/api/v1/media?${filter}`)));
       if (json) return console.log(JSON.stringify({ items, truncated }, null, 2));
       for (const i of items) console.log(show(i));
       console.log(`${items.length} file(s)${truncated ? ', more not listed' : ''}`);
       return;
     }
     case 'upload': {
-      const alt = option(args, '--alt');
+      const given = Object.fromEntries(Object.entries(labels(args)).filter(([, v]) => v !== ''));
+      const noFilename = flag(args, '--no-filename');
       const [file] = args;
       if (!file) fail(USAGE);
       const full = path.resolve(CWD, file);
@@ -147,14 +187,26 @@ async function main(argv) {
       const type = TYPES[ext] ?? fail(`${ext || 'no extension'}: allowed are ${Object.keys(TYPES).join(', ')}`);
       const body = readFileSync(full);
       const sha256 = createHash('sha256').update(body).digest('hex');
-      const q = new URLSearchParams({ sha256, filename: path.basename(full), ...(alt ? { alt } : {}) });
+      const q = new URLSearchParams({ sha256, ...(noFilename ? {} : { filename: path.basename(full) }), ...given });
       const res = await api('PUT', `/api/v1/media?${q}`, { body, headers: { 'content-type': type, 'content-length': String(body.length) } });
       const item = /** @type {Item} */ (await expectOk(res));
       if (json) return console.log(JSON.stringify({ ...item, alreadyInLibrary: res.status === 200 }, null, 2));
       console.log(item.url);
-      console.error(res.status === 200 ? 'Already in the library.' : `Uploaded ${size(item.size)} as ${item.uploadedBy}.`);
+      if (res.status === 200) console.error(`Already in the library${Object.keys(given).length ? `; labels unchanged, use: ${COMMAND} label ${item.name} …` : '.'}`);
+      else console.error(`Uploaded ${size(item.size)} as ${item.uploadedBy}${item.supersedes ? `, the newest version of ${item.asset} (was ${item.supersedes})` : ''}.`);
       return;
     }
+    case 'label': {
+      const changes = labels(args);
+      const [name] = args;
+      if (!name || !Object.keys(changes).length) fail(USAGE);
+      const item = /** @type {Item} */ (await expectOk(await api('PATCH', `/api/v1/media/${encodeURIComponent(name)}`, {
+        body: JSON.stringify(changes), headers: { 'content-type': 'application/json' },
+      })));
+      return console.log(json ? JSON.stringify(item, null, 2) : show(item));
+    }
+    case 'ui':
+      return console.log(`${ADMIN_URL}/`);
     case 'info': {
       const [name] = args;
       if (!name) fail(USAGE);

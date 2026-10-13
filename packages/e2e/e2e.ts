@@ -122,8 +122,31 @@ async function main() {
   });
   assert.equal(wrong.status, 400, await wrong.clone().text());
   assert.equal(((await wrong.json()) as { error: string }).error, 'checksum-mismatch');
+
+  let v2: { name: string; supersedes: string };
+  // Labels, with real R2: a label change writes the same bytes back under an etag condition
+  const labelled = JSON.parse(await media('label', uploaded.name, '--asset', 'e2e-clip', '--category', 'film/demo', '--json'));
+  assert.deepEqual([labelled.asset, labelled.category, labelled.alt, labelled.updatedBy], ['e2e-clip', 'film/demo', 'e2e clip', 'e2e@yolean.com']);
+  assert.equal(labelled.sha256, sha, 'same file');
+  const v2bytes = randomBytes(30_000);
+  const v2file = path.join(persist, 'clip-v2.mp4');
+  writeFileSync(v2file, v2bytes);
+  v2 = JSON.parse(await media('upload', v2file, '--asset', 'e2e-clip', '--json'));
+  assert.equal(v2.supersedes, uploaded.name);
+  const versions = JSON.parse(await media('ls', '--asset', 'e2e-clip', '--json'));
+  assert.deepEqual(versions.items.map((i: { name: string }) => i.name), [v2.name, uploaded.name]);
+  assert.equal(JSON.parse(await media('ls', '--category', 'film', '--json')).items.length, 1, 'a category includes those below it');
+  // The read-only UI, with the same login
+  const ui = await fetch(`${admin}/files/${uploaded.name}`, { headers: { 'cf-access-jwt-assertion': token } });
+  assert.equal(ui.status, 200);
+  const page = await ui.text();
+  assert.ok(page.includes('Versions of e2e-clip') && page.includes(`/files/${v2.name}`));
+  assert.equal((await fetch(`${admin}/`)).status, 401);
+  console.log('labels: label, versions, filters and UI as expected');
   await stop(running);
   running = await startPublic();
+  // The label change kept the bytes the public Worker serves
+  assert.deepEqual(Buffer.from(await (await fetch(uploaded.url)).arrayBuffer()), bytes);
 
   const whole = await fetch(uploaded.url);
   assert.equal(whole.status, 200);
@@ -143,6 +166,7 @@ async function main() {
   writeFileSync(path.join(persist, 'page.html'), `<video src="${uploaded.url}">`);
   await assert.rejects(media('rm', uploaded.name), /page.html still uses/);
   await media('rm', uploaded.name, '--force');
+  await media('rm', v2.name);
   assert.equal((await fetch(`${admin}/api/v1/me`)).status, 401);
   assert.equal((await fetch(`${admin}/api/v1/media/${uploaded.name}`, { headers: { 'cf-access-jwt-assertion': token } })).status, 404);
   await stop(running);
