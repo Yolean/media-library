@@ -2,7 +2,7 @@
   "name": "media-library",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@12.4.1",
+  "packageManager": "pnpm@12.11.2",
   "engines": { "node": ">=24.21 <25 || >=26.10" },
   "scripts": {
     "checks": "pnpm -r run typecheck && pnpm -r run test",
