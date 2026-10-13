@@ -5,6 +5,7 @@ import { html } from 'hono/html';
 import type { HtmlEscapedString } from 'hono/utils/html';
 import type { MediaItem } from './media.ts';
 import type { Filter } from './library.ts';
+import type { Usage } from './usage.ts';
 
 type Html = HtmlEscapedString | Promise<HtmlEscapedString>;
 
@@ -37,7 +38,17 @@ function preview(i: MediaItem, width: number): Html {
   return html`<a href="${i.url}">pdf</a>`;
 }
 
-export function listPage(items: MediaItem[], all: MediaItem[], filter: Filter, truncated: boolean, email: string): Html {
+/** Where the uses come from; nothing at all when the site provides no index */
+function usageNote(usage: Usage): Html | string {
+  if (usage.state === 'none') return '';
+  if (usage.state === 'unavailable') return html`<p>Uses on the site are not shown: ${usage.reason}.</p>`;
+  const { site, revision, builtAt } = usage.index;
+  return html`<p>Uses as of the build of <a href="${site}">${site}</a>${revision ? html` from commit <code>${revision.slice(0, 12)}</code>` : ''}, ${day(builtAt)}.</p>`;
+}
+
+const useLinks = (i: MediaItem) => (i.uses ?? []).map((u) => html`<a href="${u.url}" title="${u.title}">${u.page}</a> `);
+
+export function listPage(items: MediaItem[], all: MediaItem[], filter: Filter, truncated: boolean, usage: Usage, email: string): Html {
   const categories = [...new Set(all.map((i) => i.category).filter(Boolean))].sort();
   const assets = [...new Set(all.map((i) => i.asset).filter(Boolean))].sort();
   const newest = new Set(assets.map((a) => all.find((i) => i.asset === a)?.name));
@@ -49,8 +60,9 @@ export function listPage(items: MediaItem[], all: MediaItem[], filter: Filter, t
 <button>Show</button>
 </form>
 <p>${items.length} of ${all.length} file(s)${truncated ? ', more not listed' : ''}.</p>
+${usageNote(usage)}
 <table border="1" cellpadding="4">
-<thead><tr><th>Preview</th><th>Name</th><th>Filename</th><th>Category</th><th>Asset</th><th>Size</th><th>Uploaded</th><th>By</th></tr></thead>
+<thead><tr><th>Preview</th><th>Name</th><th>Filename</th><th>Category</th><th>Asset</th><th>Size</th><th>Uploaded</th><th>By</th>${usage.state === 'ok' ? html`<th>Used on</th>` : ''}</tr></thead>
 <tbody>
 ${items.map((i) => html`<tr>
 <td>${preview(i, 80)}</td>
@@ -61,12 +73,13 @@ ${items.map((i) => html`<tr>
 <td>${size(i.size)}</td>
 <td>${day(i.uploadedAt)}</td>
 <td>${i.uploadedBy}</td>
+${usage.state === 'ok' ? html`<td>${useLinks(i)}</td>` : ''}
 </tr>`)}
 </tbody>
 </table>`);
 }
 
-export function filePage(i: MediaItem, versions: MediaItem[], supersededBy: MediaItem[], email: string): Html {
+export function filePage(i: MediaItem, versions: MediaItem[], supersededBy: MediaItem[], usage: Usage, email: string): Html {
   const snippet = isImage(i) ? `<img src="${i.url}" alt="${i.alt}">` : isVideo(i) ? `<video src="${i.url}" controls></video>` : `<a href="${i.url}">${i.filename || i.name}</a>`;
   const row = (label: string, value: unknown) => html`<tr><th align="left">${label}</th><td>${value}</td></tr>`;
   const link = (name: string) => (name ? html`<a href="/files/${name}">${name}</a>` : '');
@@ -90,6 +103,10 @@ ${row('Note', i.note)}
 ${row('Uploaded', `${day(i.uploadedAt)} by ${i.uploadedBy}`)}
 ${row('Labels changed', i.updatedAt ? `${day(i.updatedAt)} by ${i.updatedBy}` : '')}
 </table>
+${i.uses?.length ? html`
+<h2>Known uses</h2>
+${usageNote(usage)}
+<ul>${i.uses.map((u) => html`<li><a href="${u.url}">${u.page}</a> ${u.title}</li>`)}</ul>` : ''}
 ${versions.length ? html`
 <h2>Versions of ${i.asset}</h2>
 <p>Newest first; the newest is the one pages should use.</p>

@@ -10,6 +10,7 @@ import {
   MediaItem, MediaName, NAME, Note, Sha256, TYPES, itemOf, metadataBytes, nameFor, storedMetadata,
 } from './media.ts';
 import { filePage, listPage, uiCsp } from './ui.ts';
+import { type Usage, readUsage, usesOf } from './usage.ts';
 
 const Filter = z.object({
   category: Category.optional().describe('Only this category and those below it'),
@@ -33,6 +34,10 @@ const meRoute = createRoute({
   },
 });
 
+const UsageInfo = z.object({
+  site: z.string(), revision: z.string().nullable(), builtAt: z.string(),
+}).nullable().describe('The build the uses come from; null when the site provides no index or it could not be read').openapi('UsageInfo');
+
 const listRoute = createRoute({
   operationId: 'listMedia',
   method: 'get',
@@ -46,6 +51,7 @@ const listRoute = createRoute({
       content: { 'application/json': { schema: z.object({
         items: z.array(MediaItem),
         truncated: z.boolean().describe(`More than ${MAX_LIST} files; only the first ${MAX_LIST} by name were read`),
+        usage: UsageInfo,
       }).openapi('MediaList') } },
     },
     ...unauthenticated,
@@ -133,11 +139,17 @@ const deleteRoute = createRoute({
   method: 'delete',
   path: '/api/v1/media/{name}',
   summary: 'Remove a file. Pages that still use it break, and there is no undo.',
+  description: 'Refused while the deployed site\'s build uses the file, or when that cannot be checked, unless force is set.',
   security,
-  request: { params: z.object({ name: MediaName }) },
+  request: {
+    params: z.object({ name: MediaName }),
+    query: z.object({ force: z.enum(['true', 'false']).optional().describe('Remove even if the deployed site uses it') }),
+  },
   responses: {
     204: { description: 'Removed' },
     404: error('No such file'),
+    409: error('The deployed site uses it'),
+    503: error('Whether the deployed site uses it could not be checked'),
     ...unauthenticated,
   },
 });
@@ -148,6 +160,11 @@ export interface AdminDeps {
 }
 
 type Env = { Bindings: Bindings; Variables: { email: string } };
+
+const withUses = (usage: Usage) => (item: MediaItem): MediaItem =>
+  (usage.state === 'none' ? item : { ...item, uses: usesOf(usage, item.name) });
+const usageInfo = (usage: Usage) =>
+  (usage.state === 'ok' ? { site: usage.index.site, revision: usage.index.revision, builtAt: usage.index.builtAt } : null);
 
 const tooLarge = (bytes: number) => ({ error: 'labels-too-large', message: `${bytes} bytes of metadata, R2 allows ${MAX_METADATA_BYTES}` });
 
@@ -190,14 +207,14 @@ export function createAdminApp(deps: Partial<AdminDeps> = {}) {
 
   app.openapi(listRoute, async (c) => {
     const filter = c.req.valid('query');
-    const { items, truncated } = await listLibrary(c.env.MEDIA, c.env.PUBLIC_BASE_URL);
-    return c.json({ items: items.filter((i) => matches(i, filter)), truncated }, 200);
+    const [{ items, truncated }, usage] = await Promise.all([listLibrary(c.env.MEDIA, c.env.PUBLIC_BASE_URL), readUsage(c.env)]);
+    return c.json({ items: items.filter((i) => matches(i, filter)).map(withUses(usage)), truncated, usage: usageInfo(usage) }, 200);
   });
 
   app.openapi(getRoute, async (c) => {
     const object = await c.env.MEDIA.head(c.req.valid('param').name);
     if (!object) return c.json({ error: 'not-found' }, 404);
-    return c.json(itemOf(object, c.env.PUBLIC_BASE_URL), 200);
+    return c.json(withUses(await readUsage(c.env))(itemOf(object, c.env.PUBLIC_BASE_URL)), 200);
   });
 
   app.openapi(uploadRoute, async (c) => {
@@ -263,28 +280,37 @@ export function createAdminApp(deps: Partial<AdminDeps> = {}) {
 
   app.openapi(deleteRoute, async (c) => {
     const { name } = c.req.valid('param');
+    const force = c.req.valid('query').force === 'true';
     if (!(await c.env.MEDIA.head(name))) return c.json({ error: 'not-found' }, 404);
+    const usage = await readUsage(c.env);
+    if (!force && usage.state === 'unavailable') return c.json({ error: 'usage-unavailable', message: `${usage.reason}; force to remove anyway` }, 503);
+    const uses = usesOf(usage, name);
+    if (!force && uses.length) {
+      return c.json({ error: 'in-use', message: `the deployed site uses it on ${uses.map((u) => u.page).join(', ')}; force to remove anyway` }, 409);
+    }
     await c.env.MEDIA.delete(name);
-    console.log(JSON.stringify({ msg: 'media deleted', name, by: c.var.email }));
+    console.log(JSON.stringify({ msg: 'media deleted', name, by: c.var.email, force, uses: uses.map((u) => u.page) }));
     return c.body(null, 204);
   });
 
   app.get('/', async (c) => {
     const filter = Filter.safeParse(Object.fromEntries(Object.entries(c.req.query()).filter(([, v]) => v !== '')));
     const f = filter.success ? filter.data : {};
-    const { items, truncated } = await listLibrary(c.env.MEDIA, c.env.PUBLIC_BASE_URL);
+    const [{ items, truncated }, usage] = await Promise.all([listLibrary(c.env.MEDIA, c.env.PUBLIC_BASE_URL), readUsage(c.env)]);
+    const all = items.map(withUses(usage));
     c.header('content-security-policy', uiCsp(c.env.PUBLIC_BASE_URL));
-    return c.html(listPage(items.filter((i) => matches(i, f)), items, f, truncated, c.var.email));
+    return c.html(listPage(all.filter((i) => matches(i, f)), all, f, truncated, usage, c.var.email));
   });
 
   app.get('/files/:name', async (c) => {
     const name = c.req.param('name');
     if (!NAME.test(name)) return c.notFound();
-    const { items } = await listLibrary(c.env.MEDIA, c.env.PUBLIC_BASE_URL);
-    const item = items.find((i) => i.name === name);
+    const [{ items }, usage] = await Promise.all([listLibrary(c.env.MEDIA, c.env.PUBLIC_BASE_URL), readUsage(c.env)]);
+    const all = items.map(withUses(usage));
+    const item = all.find((i) => i.name === name);
     if (!item) return c.notFound();
     c.header('content-security-policy', uiCsp(c.env.PUBLIC_BASE_URL));
-    return c.html(filePage(item, versionsOf(items, item.asset), items.filter((i) => i.supersedes === name), c.var.email));
+    return c.html(filePage(item, versionsOf(all, item.asset), all.filter((i) => i.supersedes === name), usage, c.var.email));
   });
 
   app.doc('/api/v1/openapi.json', {

@@ -2,8 +2,9 @@
 // share - the public one serving files, the admin one behind Cloudflare Access managing them.
 // Each project deploys its own pair, on its own account (README.md).
 import { z } from '@hono/zod-openapi';
+import { Use, type UsageBindings } from './usage.ts';
 
-export interface Bindings {
+export interface Bindings extends UsageBindings {
   /** The media bucket, jurisdiction "eu" (wrangler.jsonc) */
   MEDIA: R2Bucket;
   /** Where the public Worker serves files, e.g. https://media.yolean.workers.dev */
@@ -83,6 +84,7 @@ export const MediaItem = z.object({
   uploadedAt: z.string().datetime(),
   updatedBy: z.string().describe('Who last changed the labels; empty if never'),
   updatedAt: z.string().describe('When the labels last changed; empty if never'),
+  uses: z.array(Use).optional().describe('Where the deployed site\'s build uses the file; absent when the site provides no index'),
 }).openapi('MediaItem');
 export type MediaItem = z.infer<typeof MediaItem>;
 

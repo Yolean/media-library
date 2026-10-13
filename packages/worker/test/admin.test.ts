@@ -5,6 +5,7 @@ import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { createAdminApp } from '../src/admin.ts';
 import type { Bindings } from '../src/media.ts';
 import { fakeR2 } from './fake-r2.ts';
+import { resetUsageCache } from '../src/usage.ts';
 
 const ISSUER = 'https://yolean-homepage.cloudflareaccess.com';
 const AUD = 'aud-of-media-admin';
@@ -12,6 +13,7 @@ const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2
 const sha = (b: Uint8Array) => createHash('sha256').update(b).digest('hex');
 
 async function setup(envOverrides: Partial<Bindings> = {}) {
+  resetUsageCache();
   const r2 = fakeR2();
   const { publicKey, privateKey } = await generateKeyPair('RS256');
   const jwk = { ...(await exportJWK(publicKey)), kid: 'k', alg: 'RS256' };
@@ -252,5 +254,73 @@ describe('the read-only UI', () => {
     const { call } = await setup();
     assert.equal((await call('/', { as: null })).status, 401);
     assert.equal((await call(`/files/${nameOf(bytes(1))}`, { as: null })).status, 401);
+  });
+});
+
+/** A site Worker serving its media usage index, as the service binding USAGE would */
+const site = (index: unknown, status = 200) => ({
+  fetch: async (url: string) => {
+    assert.equal(new URL(url).pathname, '/media-usage.json');
+    return new Response(JSON.stringify(index), { status });
+  },
+}) as unknown as Fetcher;
+const usageIndex = (uses: Record<string, string[]>) => ({
+  v: 1, site: 'https://next.example', revision: '2714e28abcdef0123', builtAt: '2026-10-13T06:00:00.000Z',
+  pages: { '#/': { title: 'Start' }, '#/priser': { title: 'Priser' } }, uses,
+});
+
+describe('known uses, from the site\'s build', () => {
+  it('shows where the deployed site uses a file, and nothing for a file it does not mention', async () => {
+    const used = bytes(1);
+    const { upload, call } = await setup({ USAGE: site(usageIndex({ [nameOf(used)]: ['#/priser', 'shared', 'script'] })) });
+    await upload(used);
+    await upload(bytes(2));
+    const item = (await (await call(`/api/v1/media/${nameOf(used)}`)).json()) as { uses: Array<Record<string, string>> };
+    assert.deepEqual(item.uses, [
+      { page: '#/priser', title: 'Priser', url: 'https://next.example/#/priser' },
+      { page: 'shared', title: 'Every page (shared parts)', url: 'https://next.example/' },
+      { page: 'script', title: 'script', url: 'https://next.example/' },
+    ]);
+    const list = (await (await call('/api/v1/media')).json()) as { items: Array<{ name: string; uses: unknown[] }>; usage: { revision: string } };
+    assert.equal(list.usage.revision, '2714e28abcdef0123');
+    assert.deepEqual(list.items.find((i) => i.name === nameOf(bytes(2)))!.uses, []);
+
+    const ui = await (await call('/')).text();
+    assert.ok(ui.includes('<th>Used on</th>') && ui.includes('href="https://next.example/#/priser"'));
+    assert.ok(!/unused/i.test(ui), 'no claim that a file is unused');
+    const filePage = await (await call(`/files/${nameOf(used)}`)).text();
+    assert.ok(filePage.includes('Known uses') && filePage.includes('2714e28abcde'));
+    const other = await (await call(`/files/${nameOf(bytes(2))}`)).text();
+    assert.ok(!other.includes('Known uses'), 'nothing listed when nothing is known');
+  });
+
+  it('refuses to remove a file the deployed site uses, unless forced', async () => {
+    const used = bytes(3);
+    const { upload, call } = await setup({ USAGE: site(usageIndex({ [nameOf(used)]: ['#/'] })) });
+    await upload(used);
+    const refused = await call(`/api/v1/media/${nameOf(used)}`, { method: 'DELETE' });
+    assert.equal(refused.status, 409);
+    assert.match(((await refused.json()) as { message: string }).message, /uses it on #\//);
+    assert.equal((await call(`/api/v1/media/${nameOf(used)}?force=true`, { method: 'DELETE' })).status, 204);
+  });
+
+  it('when the index cannot be read: says so, and removes nothing unless forced', async () => {
+    for (const USAGE of [site({}, 503), site({ v: 2 })]) {
+      const b = bytes(4);
+      const { upload, call } = await setup({ USAGE });
+      await upload(b);
+      assert.equal((await call(`/api/v1/media/${nameOf(b)}`, { method: 'DELETE' })).status, 503);
+      assert.match(await (await call('/')).text(), /Uses on the site are not shown/);
+      assert.equal((await call(`/api/v1/media/${nameOf(b)}?force=true`, { method: 'DELETE' })).status, 204);
+    }
+  });
+
+  it('without a site binding: no uses at all, and removing works as before', async () => {
+    const { upload, call } = await setup();
+    await upload(bytes(5));
+    const item = (await (await call(`/api/v1/media/${nameOf(bytes(5))}`)).json()) as Record<string, unknown>;
+    assert.equal('uses' in item, false);
+    assert.ok(!(await (await call('/')).text()).includes('Used on'));
+    assert.equal((await call(`/api/v1/media/${nameOf(bytes(5))}`, { method: 'DELETE' })).status, 204);
   });
 });

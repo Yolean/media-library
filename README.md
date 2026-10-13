@@ -76,11 +76,45 @@ change writes the same bytes back, checked against their sha256 and only if the 
 unchanged since it was read (otherwise 409). Labels are limited by R2's 2,048 bytes of custom
 metadata per object; the API refuses more.
 
+## Known uses
+
+A project's build can tell the library where the deployed site uses its files. The build
+writes a media usage index into what it deploys, and the admin Worker reads it through a
+**service binding** `USAGE` to the site's Worker - Worker to Worker on the same account, so no
+credentials and no Access in the way:
+
+```json
+{
+  "v": 1,
+  "site": "https://next.yolean.workers.dev",
+  "revision": "2714e28…",
+  "builtAt": "2026-10-13T06:00:00.000Z",
+  "pages": { "#/": { "title": "Start" }, "#/priser": { "title": "Priser" } },
+  "uses": { "3fab80933e4cbe1806e0.mp4": ["#/priser", "shared"] }
+}
+```
+
+Page ids are paths or `#/routes`; `shared` means site-wide parts such as the header; a site may
+define others in `pages` (the homepage uses `script`: referenced, but no page shows it). The
+schema is `MediaUsageIndex` in [`usage.ts`](packages/worker/src/usage.ts); the homepage's
+generator is `cloudflare/build/media-usage.mjs` in `Yolean/homepage`.
+
+With it, the API returns `uses` on each file and the build it came from, the view shows a
+file's known uses, and `DELETE` (`rm`) is refused while the deployed site uses the file, or
+when the index cannot be read, unless forced. It knows only the deployed build: nothing is
+said about files it does not mention, which a branch, a preview or another site may still
+use. Read at most once a minute. Configure in the admin Worker's environment:
+
+```jsonc
+"services": [{ "binding": "USAGE", "service": "<the site's Worker>" }],
+"vars": { "USAGE_PATH": "/media-usage.json" }   // the default
+```
+
 ## The read-only view
 
 The admin Worker's `/` lists the library, filterable by category and asset, with thumbnails;
 `/files/{name}` shows one file: a preview, its public URL and an HTML snippet to copy, every
-label, and its asset's versions. Plain HTML, deliberately: no styles, no scripts, nothing that
+label, its known uses, and its asset's versions. Plain HTML, deliberately: no styles, no scripts, nothing that
 changes anything (changes go through the CLI). Every value is escaped - file names and notes
 are user input - and the pages' CSP allows nothing but images and video from the public
 media origin. Same Access login as the API.
@@ -99,7 +133,7 @@ media-library ls [--category <c>] [--asset <id>] [--json]    newest first, with 
 media-library upload <file> [labels] [--no-filename] [--json]   prints the public URL
 media-library label <name> [labels]                           "" removes a label
 media-library info <name> [--json]
-media-library rm <name> [--force]                 refused while a project file still uses it
+media-library rm <name> [--force]                 refused while a project file or the deployed site uses it
 media-library ui                                  the read-only view's address
 media-library whoami
 media-library login
@@ -111,8 +145,8 @@ labels: --alt <text> --category <c> --asset <id> --note <text>
 
 1. Dependencies, pinned to a tag (no npm registry involved; the repository is public):
    ```bash
-   pnpm add 'github:Yolean/media-library#v0.2.0&path:/packages/worker'
-   pnpm add -D 'github:Yolean/media-library#v0.2.0&path:/packages/cli'
+   pnpm add 'github:Yolean/media-library#v0.3.0&path:/packages/worker'
+   pnpm add -D 'github:Yolean/media-library#v0.3.0&path:/packages/cli'
    ```
 2. Two entry files:
    ```ts
@@ -166,6 +200,7 @@ UI on R2 from a Worker, and we considered running it instead. Reviewed at v1.2.0
 | Upload rules | any key, any content type | allowlisted types, size cap, name from content, R2 verifies sha256 |
 | Serving | stored content type, `Content-Disposition: attachment` | type from extension, `nosniff`, sandboxing CSP, Range for video, immutable caching |
 | Metadata | free-form custom and HTTP metadata, editable | a fixed set of labels, validated, size-checked against R2's limit |
+| Where files are used | not known | known uses from the deployed site's build, and no removing a file it uses |
 | Who did what | the signed-in user is known but not stored on uploads | `uploadedBy` on every object, `updatedBy` for label changes, deletions logged |
 | Other features | email receive and send, multipart uploads | none |
 | Code | Hono, chanfana 2, zod 3; keys as base64 decoded with `escape()` | Hono, `@hono/zod-openapi`, zod 4, jose; about 1,000 lines with the CLI and the view |
@@ -177,8 +212,8 @@ is and copy its URL, which a read-only page does without any of that surface.
 
 ## Limits
 
-- No undo: `rm` deletes the object (R2 has no versioning). The CLI refuses while a file
-  listed in `MEDIA_REFERENCED_BY` mentions it.
+- No undo: `rm` deletes the object (R2 has no versioning). It is refused while a file listed
+  in `MEDIA_REFERENCED_BY` mentions it, or the deployed site's usage index lists it.
 - Listing reads at most 5,000 objects (it says when it stopped); the view and asset uploads
   list the whole library each time, which is fine at a website's scale.
 - Two uploads to the same asset at the same moment can both name the same previous version

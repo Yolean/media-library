@@ -32,7 +32,8 @@ const TYPES = {
 /**
  * @typedef {{ name: string, url: string, contentType: string, size: number, sha256: string,
  *   filename: string, alt: string, category: string, asset: string, supersedes: string, note: string,
- *   uploadedBy: string, uploadedAt: string, updatedBy: string, updatedAt: string }} Item
+ *   uploadedBy: string, uploadedAt: string, updatedBy: string, updatedAt: string,
+ *   uses?: Array<{ page: string, title: string, url: string }> }} Item
  */
 
 /** The labels: optional, for people browsing and for traceability; the name stays the content hash */
@@ -48,7 +49,8 @@ const USAGE = `Usage: ${COMMAND} <command>
   label <name> [labels]             change a file's labels; "" removes one
   info <name> [--json]              one file's details
   ui                                the address of the read-only view in the browser
-  rm <name> [--force]               remove a file (refused while ${REFERENCED_BY.map((f) => path.basename(f)).join(', ') || 'the project'} uses it, unless --force)
+  rm <name> [--force]               remove a file; refused while ${REFERENCED_BY.map((f) => path.basename(f)).join(', ') || 'the project'} or the
+                                    deployed site uses it, unless --force
   whoami                            who you are signed in as
   login                             sign in again (opens the browser)
 
@@ -129,6 +131,7 @@ const show = (/** @type {Item} */ i) => [
   ...[['category', i.category], ['asset', i.asset], ['supersedes', i.supersedes], ['alt', i.alt], ['note', i.note]]
     .filter(([, v]) => v).map(([k, v]) => `  ${k}: ${v}`),
   ...(i.updatedAt ? [`  labels changed ${i.updatedAt} by ${i.updatedBy}`] : []),
+  ...(i.uses?.length ? [`  used on: ${i.uses.map((u) => u.page).join(', ')}`] : []),
 ].join('\n');
 
 /** The label options given, removed from args; "" kept, since it removes a label */
@@ -219,7 +222,7 @@ async function main(argv) {
       if (!name) fail(USAGE);
       const user = REFERENCED_BY.find((f) => existsSync(f) && readFileSync(f, 'utf8').includes(name));
       if (!force && user) fail(`${path.relative(CWD, user)} still uses ${name}; remove it there first, or pass --force.`);
-      await expectOk(await api('DELETE', `/api/v1/media/${encodeURIComponent(name)}`));
+      await expectOk(await api('DELETE', `/api/v1/media/${encodeURIComponent(name)}${force ? '?force=true' : ''}`));
       return console.error(`Removed ${name}.`);
     }
     case 'whoami':
